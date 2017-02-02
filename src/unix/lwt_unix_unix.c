@@ -99,13 +99,14 @@ LWT_NOT_AVAILABLE4(unix_mincore)
 
 CAMLprim value lwt_unix_mincore(value val_buffer, value val_offset, value val_length, value val_states)
 {
+  CAMLparam4(val_buffer, val_offset, val_length, val_states);
   long len = Wosize_val(val_states);
   MINCORE_VECTOR_TYPE vec[len];
   mincore((char*)Caml_ba_data_val(val_buffer) + Long_val(val_offset), Long_val(val_length), vec);
   long i;
   for (i = 0; i < len; i++)
-    Field(val_states, i) = Val_bool(vec[i] & 1);
-  return Val_unit;
+    caml_modify_field(val_states, i, Val_bool(vec[i] & 1));
+  CAMLreturn(Val_unit);
 }
 
 #undef MINCORE_VECTOR_TYPE
@@ -118,34 +119,38 @@ CAMLprim value lwt_unix_mincore(value val_buffer, value val_offset, value val_le
 
 CAMLprim value lwt_unix_read(value val_fd, value val_buf, value val_ofs, value val_len)
 {
+  CAMLparam4(val_fd, val_buf, val_ofs, val_len);
   long ret;
   ret = read(Int_val(val_fd), &Byte(String_val(val_buf), Long_val(val_ofs)), Long_val(val_len));
   if (ret == -1) uerror("read", Nothing);
-  return Val_long(ret);
+  CAMLreturn(Val_long(ret));
 }
 
 CAMLprim value lwt_unix_bytes_read(value val_fd, value val_buf, value val_ofs, value val_len)
 {
+  CAMLparam4(val_fd, val_buf, val_ofs, val_len);
   long ret;
   ret = read(Int_val(val_fd), (char*)Caml_ba_array_val(val_buf)->data + Long_val(val_ofs), Long_val(val_len));
   if (ret == -1) uerror("read", Nothing);
-  return Val_long(ret);
+  CAMLreturn(Val_long(ret));
 }
 
 CAMLprim value lwt_unix_write(value val_fd, value val_buf, value val_ofs, value val_len)
 {
+  CAMLparam4(val_fd, val_buf, val_ofs, val_len);
   long ret;
   ret = write(Int_val(val_fd), &Byte(String_val(val_buf), Long_val(val_ofs)), Long_val(val_len));
   if (ret == -1) uerror("write", Nothing);
-  return Val_long(ret);
+  CAMLreturn(Val_long(ret));
 }
 
 CAMLprim value lwt_unix_bytes_write(value val_fd, value val_buf, value val_ofs, value val_len)
 {
+  CAMLparam4(val_fd, val_buf, val_ofs, val_len);
   long ret;
   ret = write(Int_val(val_fd), (char*)Caml_ba_array_val(val_buf)->data + Long_val(val_ofs), Long_val(val_len));
   if (ret == -1) uerror("write", Nothing);
-  return Val_long(ret);
+  CAMLreturn(Val_long(ret));
 }
 
 
@@ -161,7 +166,8 @@ struct readv_copy_to {
     /* Offset into the OCaml buffer to which the temporary buffer must be
        copied. */
     size_t offset;
-    value caml_buffer;
+  //value caml_buffer;
+  caml_root caml_buffer;
     char *temporary_buffer;
 };
 
@@ -193,13 +199,13 @@ static void flatten_io_vectors(
     struct readv_copy_to *read_buffers)
 {
     CAMLparam1(io_vectors);
-    CAMLlocal3(node, io_vector, buffer);
+    CAMLlocal4(node, io_vector, buffer, v0);
 
     size_t index;
     size_t copy_index = 0;
 
     for (node = io_vectors, index = 0; index < count;
-         node = Field(node, 1), ++index) {
+         caml_read_field(node, 1, &node), ++index) {
 
         io_vector = Field(node, 0);
 
@@ -208,8 +214,9 @@ static void flatten_io_vectors(
 
         iovecs[index].iov_len = length;
 
-        buffer = Field(Field(io_vector, 0), 0);
-        if (Tag_val(Field(io_vector, 0)) == IO_vectors_bytes) {
+        caml_read_field(io_vector, 0, &v0);
+        caml_read_field(v0, 0, &buffer);
+        if (Tag_val(v0) == IO_vectors_bytes) {
             if (buffer_copies != NULL) {
                 buffer_copies[copy_index] = lwt_unix_malloc(length);
                 memcpy(
@@ -224,9 +231,8 @@ static void flatten_io_vectors(
                     lwt_unix_malloc(length);
                 read_buffers[copy_index].length = length;
                 read_buffers[copy_index].offset = offset;
-                read_buffers[copy_index].caml_buffer = buffer;
-                caml_register_generational_global_root(
-                    &read_buffers[copy_index].caml_buffer);
+                //read_buffers[copy_index].caml_buffer = buffer;
+                read_buffers[copy_index].caml_buffer = caml_create_root(buffer);
 
                 iovecs[index].iov_base =
                     read_buffers[copy_index].temporary_buffer;
@@ -376,35 +382,37 @@ static void worker_readv(struct job_readv *job)
 
 static value result_readv(struct job_readv *job)
 {
-    struct readv_copy_to *read_buffer;
+  CAMLparam0();
+  CAMLlocal1(buffer);
+  struct readv_copy_to *read_buffer;
 
-    /* If the read is successful, copy data to the OCaml buffers. */
-    if (job->result != -1) {
-        for (read_buffer = job->buffers; read_buffer->temporary_buffer != NULL;
-             ++read_buffer) {
-
-            memcpy(
-                &Byte(String_val(read_buffer->caml_buffer),
-                      read_buffer->offset),
-                read_buffer->temporary_buffer,
-                read_buffer->length);
-        }
-    }
-
-    /* Free heap-allocated structures and buffers. */
+  /* If the read is successful, copy data to the OCaml buffers. */
+  if (job->result != -1) {
     for (read_buffer = job->buffers; read_buffer->temporary_buffer != NULL;
          ++read_buffer) {
-
-        free(read_buffer->temporary_buffer);
-        caml_remove_generational_global_root(&read_buffer->caml_buffer);
+      buffer = caml_read_root(read_buffer->caml_buffer);
+      memcpy(&Byte(String_val(buffer),
+              read_buffer->offset),
+              read_buffer->temporary_buffer,
+              read_buffer->length);
     }
-    free(job->iovecs);
+  }
 
-    /* Decide on the actual result. */
-    ssize_t result = job->result;
-    LWT_UNIX_CHECK_JOB(job, result < 0, "readv");
-    lwt_unix_free_job(&job->job);
-    return Val_long(result);
+  /* Free heap-allocated structures and buffers. */
+  for (read_buffer = job->buffers; read_buffer->temporary_buffer != NULL;
+       ++read_buffer) {
+
+    free(read_buffer->temporary_buffer);
+    caml_delete_root(read_buffer->caml_buffer);
+    //caml_remove_generational_global_root(&read_buffer->caml_buffer);
+  }
+  free(job->iovecs);
+
+  /* Decide on the actual result. */
+  ssize_t result = job->result;
+  LWT_UNIX_CHECK_JOB(job, result < 0, "readv");
+  lwt_unix_free_job(&job->job);
+  CAMLreturn(Val_long(result));
 }
 
 CAMLprim value lwt_unix_readv_job(value fd, value io_vectors, value val_count)
@@ -493,8 +501,8 @@ value lwt_unix_recvfrom(value fd, value buf, value ofs, value len, value flags)
   if (ret == -1) uerror("recvfrom", Nothing);
   address = alloc_sockaddr(&addr, addr_len, -1);
   result = caml_alloc_tuple(2);
-  Field(result, 0) = Val_int(ret);
-  Field(result, 1) = address;
+  caml_initialize_field(result, 0, Val_int(ret));
+  caml_initialize_field(result, 1, address);
   CAMLreturn(result);
 }
 
@@ -512,8 +520,8 @@ value lwt_unix_bytes_recvfrom(value fd, value buf, value ofs, value len, value f
   if (ret == -1) uerror("recvfrom", Nothing);
   address = alloc_sockaddr(&addr, addr_len, -1);
   result = caml_alloc_tuple(2);
-  Field(result, 0) = Val_int(ret);
-  Field(result, 1) = address;
+  caml_initialize_field(result, 0, Val_int(ret));
+  caml_initialize_field(result, 1, address);
   CAMLreturn(result);
 }
 
@@ -567,10 +575,10 @@ static void store_iovs(struct iovec *iovs, value iovs_val)
 {
   CAMLparam0();
   CAMLlocal2(list, x);
-  for(list = iovs_val; Is_block(list); list = Field(list, 1), iovs++) {
-    x = Field(list, 0);
-    iovs->iov_base = &Byte(String_val(Field(x, 0)), Long_val(Field(x, 1)));
-    iovs->iov_len = Long_val(Field(x, 2));
+  for(list = iovs_val; Is_block(list); caml_read_field(list,1,&list), iovs++) {
+    caml_read_field(list, 0, &x);
+    iovs->iov_base = &Byte(String_val(Field(x, 0)), Long_field(x, 1));
+    iovs->iov_len = Long_field(x, 2);
   }
   CAMLreturn0;
 }
@@ -579,10 +587,10 @@ static void bytes_store_iovs(struct iovec *iovs, value iovs_val)
 {
   CAMLparam0();
   CAMLlocal2(list, x);
-  for(list = iovs_val; Is_block(list); list = Field(list, 1), iovs++) {
-    x = Field(list, 0);
-    iovs->iov_base = (char*)Caml_ba_data_val(Field(x, 0)) + Long_val(Field(x, 1));
-    iovs->iov_len = Long_val(Field(x, 2));
+  for(list = iovs_val; Is_block(list); caml_read_field(list,1,&list), iovs++) {
+    caml_read_field(list, 0, &x);
+    iovs->iov_base = (char*)Caml_ba_data_val(Field(x, 0)) + Long_field(x, 1);
+    iovs->iov_len = Long_field(x, 2);
   }
   CAMLreturn0;
 }
@@ -668,8 +676,8 @@ static value wrapper_send_msg(int fd, int n_iovs, struct iovec *iovs, value val_
     cm->cmsg_len = CMSG_LEN(n_fds * sizeof(int));
 
     int *fds = (int*)CMSG_DATA(cm);
-    for(; Is_block(val_fds); val_fds = Field(val_fds, 1), fds++)
-      *fds = Int_val(Field(val_fds, 0));
+    for(; Is_block(val_fds); caml_read_field(val_fds,1,&val_fds), fds++)
+      *fds = Int_field(val_fds, 0);
   };
 #else
   if (n_fds > 0) lwt_unix_not_available("fd_passing");
@@ -919,15 +927,15 @@ static value alloc_process_status(int status)
 
   if (WIFEXITED(status)) {
     st = caml_alloc_small(1, TAG_WEXITED);
-    Field(st, 0) = Val_int(WEXITSTATUS(status));
+    caml_initialize_field(st, 0, Val_int(WEXITSTATUS(status)));
   }
   else if (WIFSTOPPED(status)) {
     st = caml_alloc_small(1, TAG_WSTOPPED);
-    Field(st, 0) = Val_int(caml_rev_convert_signal_number(WSTOPSIG(status)));
+    caml_initialize_field(st, 0, Val_int(caml_rev_convert_signal_number(WSTOPSIG(status))));
   }
   else {
     st = caml_alloc_small(1, TAG_WSIGNALED);
-    Field(st, 0) = Val_int(caml_rev_convert_signal_number(WTERMSIG(status)));
+    caml_initialize_field(st, 0, Val_int(caml_rev_convert_signal_number(WTERMSIG(status))));
   }
   return st;
 }
@@ -1001,8 +1009,8 @@ CAMLprim value lwt_unix_get_affinity(value val_pid)
   for (i = sizeof(cpu_set_t) * 8 - 1; i >= 0; i--) {
     if (CPU_ISSET(i, &cpus)) {
       node = caml_alloc_tuple(2);
-      Field(node, 0) = Val_int(i);
-      Field(node, 1) = list;
+      caml_initialize_field(node, 0, Val_int(i));
+      caml_initialize_field(node, 1, list);
       list = node;
     }
   }
@@ -1013,8 +1021,8 @@ CAMLprim value lwt_unix_set_affinity(value val_pid, value val_cpus)
 {
   cpu_set_t cpus;
   CPU_ZERO(&cpus);
-  for (; Is_block(val_cpus); val_cpus = Field(val_cpus, 1))
-    CPU_SET(Int_val(Field(val_cpus, 0)), &cpus);
+  for (; Is_block(val_cpus); caml_read_field(val_cpus, 1, &val_cpus))
+    CPU_SET(Int_field(val_cpus, 0), &cpus);
   if (sched_setaffinity(Int_val(val_pid), sizeof(cpu_set_t), &cpus) < 0)
     uerror("sched_setaffinity", Nothing);
   return Val_unit;
@@ -1184,8 +1192,8 @@ static value result_open(struct job_open *job)
   int fd = job->fd;
   LWT_UNIX_CHECK_JOB_ARG(job, fd < 0, "open", job->name);
   value result = caml_alloc_tuple(2);
-  Field(result, 0) = Val_int(fd);
-  Field(result, 1) = Val_bool(job->blocking);
+  caml_initialize_field(result, 0, Val_int(fd));
+  caml_initialize_field(result, 1, Val_bool(job->blocking));
   lwt_unix_free_job(&job->job);
   return result;
 }
@@ -1212,7 +1220,8 @@ struct job_read {
   /* The amount of data to read. */
   long length;
   /* The OCaml string. */
-  value string;
+  //value string;
+  caml_root string;
   /* The offset in the string. */
   long offset;
   /* The result of the read syscall. */
@@ -1231,17 +1240,23 @@ static void worker_read(struct job_read *job)
 
 static value result_read(struct job_read *job)
 {
+  CAMLparam0();
+  CAMLlocal1(string);
   long result = job->result;
   if (result < 0) {
     int error_code = job->error_code;
-    caml_remove_generational_global_root(&(job->string));
+    //caml_remove_generational_global_root(&(job->string));
+    caml_delete_root(job->string);
     lwt_unix_free_job(&job->job);
     unix_error(error_code, "read", Nothing);
   } else {
-    memcpy(String_val(job->string) + job->offset, job->buffer, result);
-    caml_remove_generational_global_root(&(job->string));
+    string = caml_read_root(job->string);
+    memcpy(String_val(string) + job->offset, job->buffer, result);
+    caml_modify_root(job->string, string);
+    //caml_remove_generational_global_root(&(job->string));
+    caml_delete_root(job->string);
     lwt_unix_free_job(&job->job);
-    return Val_long(result);
+    CAMLreturn(Val_long(result));
   }
 }
 
@@ -1251,9 +1266,10 @@ CAMLprim value lwt_unix_read_job(value val_fd, value val_buffer, value val_offse
   LWT_UNIX_INIT_JOB(job, read, length);
   job->fd = Int_val(val_fd);
   job->length = length;
-  job->string = val_buffer;
+  //job->string = val_buffer;
   job->offset = Long_val(val_offset);
-  caml_register_generational_global_root(&(job->string));
+  //caml_register_generational_global_root(&(job->string));
+  job->string = caml_create_root(val_buffer);
   return lwt_unix_alloc_job(&(job->job));
 }
 
@@ -1399,43 +1415,43 @@ static value copy_stat(int use_64, struct stat *buf)
     caml_copy_double((double) buf->st_ctime + (NANOSEC(buf, c) / 1000000000.0));
   offset = use_64 ? caml_copy_int64(buf->st_size) : Val_int(buf->st_size);
   v = caml_alloc_small(12, 0);
-  Field(v, 0) = Val_int (buf->st_dev);
-  Field(v, 1) = Val_int (buf->st_ino);
+  caml_initialize_field(v, 0, Val_int(buf->st_dev));
+  caml_initialize_field(v, 1, Val_int(buf->st_ino));
   switch (buf->st_mode & S_IFMT) {
   case S_IFREG:
-    Field(v, 2) = Val_int(0);
+    caml_initialize_field(v, 2, Val_int(0));
     break;
   case S_IFDIR:
-    Field(v, 2) = Val_int(1);
+    caml_initialize_field(v, 2, Val_int(1));
     break;
   case S_IFCHR:
-    Field(v, 2) = Val_int(2);
+    caml_initialize_field(v, 2, Val_int(2)); 
     break;
   case S_IFBLK:
-    Field(v, 2) = Val_int(3);
+    caml_initialize_field(v, 2, Val_int(3));
     break;
   case S_IFLNK:
-    Field(v, 2) = Val_int(4);
+    caml_initialize_field(v, 2, Val_int(4));
     break;
   case S_IFIFO:
-    Field(v, 2) = Val_int(5);
+    caml_initialize_field(v, 2, Val_int(5));
     break;
   case S_IFSOCK:
-    Field(v, 2) = Val_int(6);
+    caml_initialize_field(v, 2, Val_int(6));
     break;
   default:
-    Field(v, 2) = Val_int(0);
+    caml_initialize_field(v, 2, Val_int(0));
     break;
   }
-  Field(v, 3) = Val_int(buf->st_mode & 07777);
-  Field(v, 4) = Val_int(buf->st_nlink);
-  Field(v, 5) = Val_int(buf->st_uid);
-  Field(v, 6) = Val_int(buf->st_gid);
-  Field(v, 7) = Val_int(buf->st_rdev);
-  Field(v, 8) = offset;
-  Field(v, 9) = atime;
-  Field(v, 10) = mtime;
-  Field(v, 11) = ctime;
+  caml_initialize_field(v, 3, Val_int(buf->st_mode & 07777));
+  caml_initialize_field(v, 4, Val_int(buf->st_nlink));
+  caml_initialize_field(v, 5, Val_int(buf->st_uid));
+  caml_initialize_field(v, 6, Val_int(buf->st_gid));
+  caml_initialize_field(v, 7, Val_int(buf->st_rdev));
+  caml_initialize_field(v, 8, offset);
+  caml_initialize_field(v, 9, atime);
+  caml_initialize_field(v, 10, mtime);
+  caml_initialize_field(v, 11, ctime);
   CAMLreturn(v);
 }
 
@@ -1794,6 +1810,8 @@ static void worker_readdir(struct job_readdir *job)
 
 static value result_readdir(struct job_readdir *job)
 {
+  CAMLparam0();
+  CAMLlocal1(name);
   int result = job->result;
   if (result) {
     free(job->entry);
@@ -1804,10 +1822,10 @@ static value result_readdir(struct job_readdir *job)
     lwt_unix_free_job(&job->job);
     caml_raise_end_of_file();
   } else {
-    value name = caml_copy_string(job->entry->d_name);
+    name = caml_copy_string(job->entry->d_name);
     free(job->entry);
     lwt_unix_free_job(&job->job);
-    return name;
+    CAMLreturn(name);
   }
 }
 
@@ -2102,13 +2120,13 @@ static value alloc_passwd_entry(struct passwd *entry)
     dir = caml_copy_string(entry->pw_dir);
     shell = caml_copy_string(entry->pw_shell);
     res = caml_alloc_small(7, 0);
-    Field(res, 0) = name;
-    Field(res, 1) = passwd;
-    Field(res, 2) = Val_int(entry->pw_uid);
-    Field(res, 3) = Val_int(entry->pw_gid);
-    Field(res, 4) = gecos;
-    Field(res, 5) = dir;
-    Field(res, 6) = shell;
+    caml_initialize_field(res, 0, name);
+    caml_initialize_field(res, 1, passwd);
+    caml_initialize_field(res, 2, Val_int(entry->pw_uid));
+    caml_initialize_field(res, 3, Val_int(entry->pw_gid));
+    caml_initialize_field(res, 4, gecos);
+    caml_initialize_field(res, 5, dir);
+    caml_initialize_field(res, 6, shell);
   End_roots();
   return res;
 }
@@ -2123,10 +2141,10 @@ static value alloc_group_entry(struct group *entry)
     pass = caml_copy_string(entry->gr_passwd);
     mem = caml_copy_string_array((const char**)entry->gr_mem);
     res = caml_alloc_small(4, 0);
-    Field(res, 0) = name;
-    Field(res, 1) = pass;
-    Field(res, 2) = Val_int(entry->gr_gid);
-    Field(res, 3) = mem;
+    caml_initialize_field(res, 0, name);
+    caml_initialize_field(res, 1, pass);
+    caml_initialize_field(res, 2, Val_int(entry->gr_gid));
+    caml_initialize_field(res, 3, mem);
   End_roots();
   return res;
 }
@@ -2397,14 +2415,14 @@ static value alloc_host_entry(struct hostent *entry)
       addr_list =
         caml_alloc_array(alloc_one_addr, (const char**)entry->h_addr_list);
     res = caml_alloc_small(4, 0);
-    Field(res, 0) = name;
-    Field(res, 1) = aliases;
+    caml_initialize_field(res, 0, name);
+    caml_initialize_field(res, 1, aliases);
     switch (entry->h_addrtype) {
-    case PF_UNIX:          Field(res, 2) = Val_int(0); break;
-    case PF_INET:          Field(res, 2) = Val_int(1); break;
-    default: /*PF_INET6 */ Field(res, 2) = Val_int(2); break;
+    case PF_UNIX:          caml_initialize_field(res, 2, Val_int(0)); break;
+    case PF_INET:          caml_initialize_field(res, 2, Val_int(1)); break;
+    default: /*PF_INET6 */ caml_initialize_field(res, 2, Val_int(2)); break;
     }
-    Field(res, 3) = addr_list;
+    caml_initialize_field(res, 3, addr_list);
   End_roots();
   return res;
 }
@@ -2576,9 +2594,9 @@ static value alloc_protoent(struct protoent *entry)
     name = caml_copy_string(entry->p_name);
     aliases = caml_copy_string_array((const char**)entry->p_aliases);
     res = caml_alloc_small(3, 0);
-    Field(res,0) = name;
-    Field(res,1) = aliases;
-    Field(res,2) = Val_int(entry->p_proto);
+    caml_initialize_field(res,0,name);
+    caml_initialize_field(res,1,aliases);
+    caml_initialize_field(res,2,Val_int(entry->p_proto));
   End_roots();
   return res;
 }
@@ -2593,10 +2611,10 @@ static value alloc_servent(struct servent *entry)
     aliases = caml_copy_string_array((const char**)entry->s_aliases);
     proto = caml_copy_string(entry->s_proto);
     res = caml_alloc_small(4, 0);
-    Field(res,0) = name;
-    Field(res,1) = aliases;
-    Field(res,2) = Val_int(ntohs(entry->s_port));
-    Field(res,3) = proto;
+    caml_initialize_field(res,0,name);
+    caml_initialize_field(res,1,aliases);
+    caml_initialize_field(res,2,Val_int(ntohs(entry->s_port)));
+    caml_initialize_field(res,3,proto);
   End_roots();
   return res;
 }
@@ -2843,11 +2861,11 @@ static value convert_addrinfo(struct addrinfo * a)
   vaddr = alloc_sockaddr(&sa, len, -1);
   vcanonname = caml_copy_string(a->ai_canonname == NULL ? "" : a->ai_canonname);
   vres = caml_alloc_small(5, 0);
-  Field(vres, 0) = cst_to_constr(a->ai_family, socket_domain_table, 3, 0);
-  Field(vres, 1) = cst_to_constr(a->ai_socktype, socket_type_table, 4, 0);
-  Field(vres, 2) = Val_int(a->ai_protocol);
-  Field(vres, 3) = vaddr;
-  Field(vres, 4) = vcanonname;
+  caml_initialize_field(vres, 0, cst_to_constr(a->ai_family, socket_domain_table, 3, 0));
+  caml_initialize_field(vres, 1, cst_to_constr(a->ai_socktype, socket_type_table, 4, 0));
+  caml_initialize_field(vres, 2, Val_int(a->ai_protocol));
+  caml_initialize_field(vres, 3, vaddr);
+  caml_initialize_field(vres, 4, vcanonname);
   CAMLreturn(vres);
 }
 
@@ -2868,8 +2886,8 @@ static value result_getaddrinfo(struct job_getaddrinfo *job)
     for (r = job->info; r; r = r->ai_next) {
       e = convert_addrinfo(r);
       v = caml_alloc_small(2, 0);
-      Field(v, 0) = e;
-      Field(v, 1) = vres;
+      caml_initialize_field(v, 0, e);
+      caml_initialize_field(v, 1, vres);
       vres = v;
     }
   }
@@ -2881,22 +2899,24 @@ static value result_getaddrinfo(struct job_getaddrinfo *job)
 
 CAMLprim value lwt_unix_getaddrinfo_job(value node, value service, value hints)
 {
+  CAMLparam3(node, service, hints);
+  CAMLlocal1(v);
   LWT_UNIX_INIT_JOB_STRING2(job, getaddrinfo, 0, node, service);
   job->info = NULL;
   memset(&job->hints, 0, sizeof(struct addrinfo));
   job->hints.ai_family = PF_UNSPEC;
-  for (/*nothing*/; Is_block(hints); hints = Field(hints, 1)) {
-    value v = Field(hints, 0);
+  for (/*nothing*/; Is_block(hints); caml_read_field(hints, 1, &hints)) {
+    caml_read_field(hints, 0, &v);
     if (Is_block(v))
       switch (Tag_val(v)) {
       case 0: /* AI_FAMILY of socket_domain */
-        job->hints.ai_family = socket_domain_table[Int_val(Field(v, 0))];
+        job->hints.ai_family = socket_domain_table[Int_field(v, 0)];
         break;
       case 1: /* AI_SOCKTYPE of socket_type */
-        job->hints.ai_socktype = socket_type_table[Int_val(Field(v, 0))];
+        job->hints.ai_socktype = socket_type_table[Int_field(v, 0)];
         break;
       case 2: /* AI_PROTOCOL of int */
-        job->hints.ai_protocol = Int_val(Field(v, 0));
+        job->hints.ai_protocol = Int_field(v, 0);
         break;
       }
     else
@@ -2909,7 +2929,7 @@ CAMLprim value lwt_unix_getaddrinfo_job(value node, value service, value hints)
         job->hints.ai_flags |= AI_PASSIVE; break;
       }
   }
-  return lwt_unix_alloc_job(&job->job);
+  CAMLreturn(lwt_unix_alloc_job(&job->job));
 }
 
 /* +-----------------------------------------------------------------+
@@ -2948,18 +2968,19 @@ static value result_getnameinfo(struct job_getnameinfo *job)
     vhost = caml_copy_string(job->host);
     vserv = caml_copy_string(job->serv);
     vres = caml_alloc_small(2, 0);
-    Field(vres, 0) = vhost;
-    Field(vres, 1) = vserv;
+    caml_initialize_field(vres, 0, vhost);
+    caml_initialize_field(vres, 1, vserv);
     CAMLreturn(vres);
   }
 }
 
 CAMLprim value lwt_unix_getnameinfo_job(value sockaddr, value opts)
 {
+  CAMLparam2(sockaddr, opts);
   LWT_UNIX_INIT_JOB(job, getnameinfo, 0);
   get_sockaddr(sockaddr, &job->addr, &job->addr_len);
   job->opts = caml_convert_flag_list(opts, getnameinfo_flag_table);
-  return lwt_unix_alloc_job(&job->job);
+  CAMLreturn(lwt_unix_alloc_job(&job->job));
 }
 
 /* bind */
@@ -3233,18 +3254,22 @@ static void worker_tcgetattr(struct job_tcgetattr *job)
 
 static value result_tcgetattr(struct job_tcgetattr *job)
 {
+  CAMLparam0();
+  CAMLlocal2(res, v);
   LWT_UNIX_CHECK_JOB(job, job->result < 0, "tcgetattr");
-  value res = caml_alloc_tuple(NFIELDS);
-  encode_terminal_status(&job->termios, &Field(res, 0));
+  res = caml_alloc_tuple(NFIELDS);
+  encode_terminal_status(&job->termios, &v);
+  caml_initialize_field(res, 0, v);
   lwt_unix_free_job(&job->job);
-  return res;
+  CAMLreturn(res);
 }
 
 CAMLprim value lwt_unix_tcgetattr_job(value fd)
 {
+  CAMLparam1(fd);
   LWT_UNIX_INIT_JOB(job, tcgetattr, 0);
   job->fd = Int_val(fd);
-  return lwt_unix_alloc_job(&job->job);
+  CAMLreturn(lwt_unix_alloc_job(&job->job));
 }
 
 /* +-----------------------------------------------------------------+
@@ -3281,18 +3306,22 @@ static void worker_tcsetattr(struct job_tcsetattr *job)
 
 static value result_tcsetattr(struct job_tcsetattr *job)
 {
+  CAMLparam0();
   LWT_UNIX_CHECK_JOB(job, job->result < 0, "tcsetattr");
   lwt_unix_free_job(&job->job);
-  return Val_unit;
+  CAMLreturn(Val_unit);
 }
 
 CAMLprim value lwt_unix_tcsetattr_job(value fd, value when, value termios)
 {
+  CAMLparam3(fd, when, termios);
+  CAMLlocal1(v0);
+  caml_read_field(termios, 0, &v0);
   LWT_UNIX_INIT_JOB(job, tcsetattr, 0);
   job->fd = Int_val(fd);
   job->when = when_flag_table[Int_val(when)];
-  memcpy(&job->termios, &Field(termios, 0), NFIELDS * sizeof(value));
-  return lwt_unix_alloc_job(&job->job);
+  memcpy(&job->termios, &v0, NFIELDS * sizeof(value));
+  CAMLreturn(lwt_unix_alloc_job(&job->job));
 }
 
 /* +-----------------------------------------------------------------+

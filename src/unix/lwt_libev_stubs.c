@@ -183,8 +183,9 @@ static value lwt_libev_io_init(struct ev_loop *loop, int fd, int event, value ca
   result = caml_alloc_custom(&watcher_ops, sizeof(struct ev_io*), 0, 1);
   Ev_io_val(result) = watcher;
   /* Store the callback in the watcher, and register it as a root */
-  watcher->data = (void*)callback;
-  caml_register_generational_global_root((value*)(&(watcher->data)));
+  //watcher->data = (void*)callback;
+  //caml_register_generational_global_root((value*)(&(watcher->data)));
+  watcher->data = (void*)caml_create_root(callback);
   /* Start the event */
   ev_io_start(loop, watcher);
   CAMLreturn(result);
@@ -204,7 +205,8 @@ CAMLprim value lwt_libev_io_stop(value loop, value val_watcher)
 {
   CAMLparam2(loop, val_watcher);
   struct ev_io* watcher = Ev_io_val(val_watcher);
-  caml_remove_generational_global_root((value*)(&(watcher->data)));
+  //caml_remove_generational_global_root((value*)(&(watcher->data)));
+  caml_delete_root((caml_root)watcher->data);
   ev_io_stop(Ev_loop_val(loop), watcher);
   free(watcher);
   CAMLreturn(Val_unit);
@@ -216,7 +218,11 @@ CAMLprim value lwt_libev_io_stop(value loop, value val_watcher)
 
 static void handle_timer(struct ev_loop *loop, ev_timer *watcher, int revents)
 {
-  caml_callback((value)watcher->data, Val_unit);
+  CAMLparam0();
+  CAMLlocal1(callback);
+  callback = caml_read_root((caml_root)watcher->data);
+  caml_callback(callback, Val_unit);
+  CAMLreturn0;
 }
 
 CAMLprim value lwt_libev_timer_init(value loop, value delay, value repeat, value callback)
@@ -234,8 +240,9 @@ CAMLprim value lwt_libev_timer_init(value loop, value delay, value repeat, value
   result = caml_alloc_custom(&watcher_ops, sizeof(struct ev_timer*), 0, 1);
   Ev_timer_val(result) = watcher;
   /* Store the callback in the watcher, and register it as a root */
-  watcher->data = (void*)callback;
-  caml_register_generational_global_root((value*)(&(watcher->data)));
+  //watcher->data = (void*)callback;
+  //caml_register_generational_global_root((value*)(&(watcher->data)));
+  watcher->data = (void*)caml_create_root(callback);
   /* Start the event */
   ev_timer_start(Ev_loop_val(loop), watcher);
   CAMLreturn(result);
@@ -245,7 +252,8 @@ CAMLprim value lwt_libev_timer_stop(value loop, value val_watcher)
 {
   CAMLparam2(loop, val_watcher);
   struct ev_timer* watcher = Ev_timer_val(val_watcher);
-  caml_remove_generational_global_root((value*)(&(watcher->data)));
+  //caml_remove_generational_global_root((value*)(&(watcher->data)));
+  caml_delete_root((caml_root)watcher->data);
   ev_timer_stop(Ev_loop_val(loop), watcher);
   free(watcher);
   CAMLreturn(Val_unit);

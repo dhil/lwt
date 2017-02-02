@@ -130,7 +130,8 @@ char *lwt_unix_strdup(char *str)
 
 void lwt_unix_not_available(char const *feature)
 {
-  caml_raise_with_arg(*caml_named_value("lwt:not-available"), caml_copy_string(feature));
+  caml_root exn = caml_named_root("lwt:not-available");
+  caml_raise_with_arg(caml_read_root(exn), caml_copy_string(feature));
 }
 
 /* +-----------------------------------------------------------------+
@@ -586,8 +587,9 @@ value lwt_unix_send_notification_stub(value id)
 
 value lwt_unix_recv_notifications()
 {
+  CAMLparam0();
+  CAMLlocal1(result);
   int ret, i, current_index;
-  value result;
 #if !defined(LWT_ON_WINDOWS)
   sigset_t new_mask;
   sigset_t old_mask;
@@ -633,14 +635,15 @@ value lwt_unix_recv_notifications()
 
   /* Read all pending notifications. */
   for (i = 0; i < notification_index; i++)
-    Field(result, i) = Val_long(notifications[i]);
+    caml_initialize_field(result, i, Val_long(notifications[i]));
+  //Field(result, i) = Val_long(notifications[i]);
   /* Reset the index. */
   notification_index = 0;
   lwt_unix_mutex_unlock(&notification_mutex);
 #if !defined(LWT_ON_WINDOWS)
   pthread_sigmask(SIG_SETMASK, &old_mask, NULL);
 #endif
-  return result;
+  CAMLreturn(result);
 }
 
 #if defined(LWT_ON_WINDOWS)
